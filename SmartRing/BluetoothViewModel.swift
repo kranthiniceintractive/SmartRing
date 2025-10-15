@@ -174,11 +174,22 @@ extension BluetoothViewModel: CBCentralManagerDelegate, CBPeripheralDelegate {
     
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         print("✅ didConnect triggered for \(peripheral.name ?? "Unknown")")
-        isConnected = true
-        isConnectingSavedRing = false // stop the animation
         connectedPeripheral = peripheral
-        statusMessage = "Connected to \(peripheral.name ?? "Device")"
+        isConnectingSavedRing = false
+        statusMessage = "Discovering services..."
+        peripheral.delegate = self
         peripheral.discoverServices(nil)
+    }
+    
+    func handlePostConnectionActions() {
+        print("💡 Ring connected — blinking twice before showing main view")
+        sendBlinkTwiceCommand()
+        
+        // Wait 1.5 seconds for blink animation to finish, then publish isConnected
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            self.isConnected = true
+            print("🎯 Blink done — switching to MainTabView")
+        }
     }
     
     func centralManager(_ central: CBCentralManager,
@@ -266,6 +277,18 @@ extension BluetoothViewModel: CBCentralManagerDelegate, CBPeripheralDelegate {
             shouldAutoReconnect = true
             print("💾 Saved COMMAND ring characteristic for \(ring.name)")
         }
+        // ✅ When all characteristics are discovered, blink then open MainTabView
+        if service.uuid == CBUUID(string: "6E40FFF0-B5A3-F393-E0A9-E50E24DCCA9E"),
+           let _ = peripheralCharacteristics[peripheral.identifier]?.rx {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                print("💡 RX characteristic ready — sending BlinkTwice now")
+                self.sendBlinkTwiceCommand()
+                DispatchQueue.main.asyncAfter(deadline: .now()) {
+                    self.isConnected = true
+                    print("🎯 Blink done — switching to MainTabView")
+                }
+            }
+        }
     }
 }
 // MARK: - Persistence
@@ -315,15 +338,20 @@ extension BluetoothViewModel {
             print("⚠️ No connected peripheral or RX characteristic.")
             return
         }
-
-        var findCmd = [UInt8](repeating: 0x00, count: 16)
-        findCmd[0] = 0x50 // Command ID 80
-        findCmd[1] = 0x55
-        findCmd[2] = 0xAA
-        findCmd[15] = findCmd.reduce(0, +) & 0xFF // simple checksum
-        let data = Data(findCmd)
+        var cmd = [UInt8](repeating: 0x00, count: 16)
+        cmd[0] = 0x50        // Command ID
+        cmd[1] = 0x55        // Data1
+        cmd[2] = 0xAA        // Data2
+        var sum: UInt16 = 0
+        for i in 0..<15 {
+            sum += UInt16(cmd[i])
+        }
+        cmd[15] = UInt8(sum % 255)
+        let data = Data(cmd)
+        let hex = cmd.map { String(format: "%02X", $0) }.joined(separator: " ")
+        print("🔍 Sending Find Device command → \(hex)")
+        print("📤 Writing to characteristic: \(characteristic.uuid.uuidString)")
         peripheral.writeValue(data, for: characteristic, type: .withResponse)
-        print("🔍 Sent Find Device (LED Blink) command")
     }
 }
 // MARK: - Ring Command Extensions
@@ -341,18 +369,14 @@ extension BluetoothViewModel {
             print("⚠️ Not ready — no connected ring or RX characteristic.")
             return
         }
-
         let bytes: [UInt8] = [0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
                               0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                               0x00, 0x00, 0x00, 0x10]
         let data = Data(bytes)
         let hex = bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
-
         print("💡 Sending BlinkTwice → \(hex)")
         print("📤 Writing to characteristic: \(rx.uuid.uuidString)")
         print("🧩 For peripheral: \(peripheral.name ?? "Unknown")")
-
         peripheral.writeValue(data, for: rx, type: .withoutResponse)
     }
-
 }

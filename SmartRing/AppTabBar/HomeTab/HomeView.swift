@@ -22,7 +22,7 @@ struct HomeView: View {
                     }
                     if let sleep = data.sleep {
                         SleepCard(sleep: sleep)
-                            .onTapGesture { ble.sendBlinkTwiceCommand() }
+                            .onTapGesture { ble.sendFindDeviceCommand() }
                     }
                     if let heartRate = data.heartRate {
                         HeartRateChartCard(heartRate: heartRate)
@@ -57,8 +57,6 @@ struct HomeView: View {
         .toolbar(.hidden, for: .navigationBar)
     }
 }
-
-
 struct EmptyPlaceholderView: View {
     var body: some View {
         VStack(spacing: 20) {
