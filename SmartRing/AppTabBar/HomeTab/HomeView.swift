@@ -9,54 +9,58 @@ import SwiftUI
 import Charts
 
 struct HomeView: View {
-    @State private var ringData: RingData? = .dummy // Replace with real BLE data later
+    @State private var ringData: RingData? = .dummy
     @ObservedObject private var ble = BluetoothViewModel.shared
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                if let data = ringData {
-                    if let activity = data.activity {
-                        ActivityCard(activity: activity)
-                            .onTapGesture { ble.sendBlinkTwiceCommand() }
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    if let data = ringData {
+                        if let activity = data.activity {
+                            ActivityCard(activity: activity)
+                                .onTapGesture { ble.sendBlinkTwiceCommand() }
+                        }
+                        if let sleep = data.sleep {
+                            SleepCard(sleep: sleep)
+                                .onTapGesture { ble.sendFindDeviceCommand() }
+                        }
+                        if let heartRate = data.heartRate {
+                            HeartRateChartCard(heartRate: heartRate)
+                        }
+                        if let hrv = data.hrv {
+                            NavigationLink {
+                                HRVListView()
+                            } label: {
+                                HRVChartCard(hrv: hrv)
+                            }
+                            .buttonStyle(.plain) // prevents tap animation
+                        }
+                        if let bloodOxygen = data.bloodOxygen {
+                            BloodOxygenChartCard(oxygen: bloodOxygen)
+                        }
+                        if let stress = data.stress {
+                            StressCard(stress: stress)
+                        }
+                    } else {
+                        EmptyPlaceholderView()
                     }
-                    if let sleep = data.sleep {
-                        SleepCard(sleep: sleep)
-                            .onTapGesture { ble.sendFindDeviceCommand() }
-                    }
-                    if let heartRate = data.heartRate {
-                        HeartRateChartCard(heartRate: heartRate)
-                            .onTapGesture { ble.sendBlinkTwiceCommand() }
-                    }
-                    if let hrv = data.hrv {
-                        HRVChartCard(hrv: hrv)
-                            .onTapGesture { ble.sendBlinkTwiceCommand() }
-                    }
-                    if let bloodOxygen = data.bloodOxygen {
-                        BloodOxygenChartCard(oxygen: bloodOxygen)
-                            .onTapGesture { ble.sendBlinkTwiceCommand() }
-                    }
-                    if let stress = data.stress {
-                        StressCard(stress: stress)
-                            .onTapGesture { ble.sendBlinkTwiceCommand() }
-                    }
-                } else {
-                    EmptyPlaceholderView()
                 }
+                .padding()
             }
-            .padding()
+            .background(
+                LinearGradient(gradient: Gradient(colors: [
+                    Color.blue.opacity(0.2),
+                    Color.black.opacity(0.1)
+                ]), startPoint: .topLeading, endPoint: .bottomTrailing)
+                .ignoresSafeArea()
+            )
+            .navigationTitle("Home")
+            .toolbar(.hidden, for: .navigationBar)
         }
-        .scrollIndicatorsFlash(onAppear: true)
-        .background(
-            LinearGradient(gradient: Gradient(colors: [
-                Color.blue.opacity(0.2),
-                Color.black.opacity(0.1)
-            ]), startPoint: .topLeading, endPoint: .bottomTrailing)
-            .ignoresSafeArea()
-        )
-        .toolbar(.hidden, for: .navigationBar)
     }
 }
+
 struct EmptyPlaceholderView: View {
     var body: some View {
         VStack(spacing: 20) {

@@ -18,8 +18,21 @@ struct RingDevice: Codable, Identifiable {
     let txUUID: String?
 }
 
+struct HRVSample: Identifiable {
+    let id = UUID()
+    let value: Int
+}
+
+struct HRVDayData: Identifiable {
+    let id = UUID()
+    let date: Date
+    let samples: [HRVSample]
+}
+
 final class BluetoothViewModel: NSObject, ObservableObject {
     static let shared = BluetoothViewModel()
+    @Published var hrvWeekData: [HRVDayData] = []
+    var onHRVData: (([UInt8]) -> Void)?
     
     // Published States
     @Published var peripherals: [CBPeripheral] = []
@@ -29,19 +42,19 @@ final class BluetoothViewModel: NSObject, ObservableObject {
     
     @Published var isConnectingSavedRing = false
     @Published var animationRotation = 0.0
-    private var animationTimer: Timer?
+    public var animationTimer: Timer?
 
     // Internal
-    private var centralManager: CBCentralManager!
-    private var peripheralCharacteristics: [UUID: (rx: CBCharacteristic, tx: CBCharacteristic?)] = [:]
-    private var shouldAutoReconnect = false
+    public var centralManager: CBCentralManager!
+    public var peripheralCharacteristics: [UUID: (rx: CBCharacteristic, tx: CBCharacteristic?)] = [:]
+    public var shouldAutoReconnect = false
     
     // MARK: - Additional Big Data Characteristics
-    private var bigDataWriteCharacteristic: CBCharacteristic?
-    private var bigDataNotifyCharacteristic: CBCharacteristic?
+    public var bigDataWriteCharacteristic: CBCharacteristic?
+    public var bigDataNotifyCharacteristic: CBCharacteristic?
     
     // Persisted Ring
-    private let savedRingKey = "savedRingDevice"
+    public let savedRingKey = "savedRingDevice"
     public var savedRing: RingDevice? {
         didSet { persistRing() }
     }
@@ -219,7 +232,15 @@ extension BluetoothViewModel: CBCentralManagerDelegate, CBPeripheralDelegate {
             print("✅ Write successful to \(characteristic.uuid)")
         }
     }
-    
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard let data = characteristic.value else { return }
+        let bytes = [UInt8](data)
+
+        if bytes.first == 0x39 {
+            onHRVData?(bytes)
+        }
+    }
+
     // MARK: Service & Characteristic discovery
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }

@@ -7,10 +7,11 @@
 
 import SwiftUI
 import CoreBluetooth
+import Combine
 
 struct BluetoothView: View {
+    
     @StateObject private var viewModel = BluetoothViewModel.shared
-
     var body: some View {
         if viewModel.isConnected {
             // ✅ Once connected, move to Main tab
@@ -158,6 +159,112 @@ struct BluetoothView: View {
         }
         .onAppear {
             viewModel.tryAutoReconnect()
+        }
+    }
+}
+// MARK: - HRV Weekly Fetch Logic
+extension BluetoothViewModel {
+
+    func requestHRVWeek() {
+        guard connectedPeripheral != nil else {
+            print("⚠️ No connected peripheral.")
+            return
+        }
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        print("📅 Starting HRV 7-day fetch...")
+
+        var allResults: [HRVDayData] = []
+
+        func fetchDay(_ offset: Int) {
+            guard offset < 7 else {
+                DispatchQueue.main.async {
+                    self.hrvWeekData = allResults
+                }
+                print("✅ Finished HRV requests for 7 days.")
+                return
+            }
+
+            guard let dayDate = calendar.date(byAdding: .day, value: -offset, to: today) else { return }
+            let unixTime = UInt32(dayDate.timeIntervalSince1970)
+            print("➡️ Sending HRV request for \(dayDate) (\(offset) days ago)")
+
+            sendHRVCommand(unixTime: unixTime) { samples in
+                allResults.append(HRVDayData(date: dayDate, samples: samples))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    fetchDay(offset + 1)
+                }
+            }
+        }
+
+        fetchDay(0)
+    }
+
+    private func sendHRVCommand(unixTime: UInt32, completion: @escaping ([HRVSample]) -> Void) {
+        guard let peripheral = connectedPeripheral,
+              let rx = bigDataWriteCharacteristic ?? peripheralCharacteristics[peripheral.identifier]?.rx else {
+            print("⚠️ HRV command cannot be sent — RX missing.")
+            return
+        }
+
+        // 16-byte command (ID = 0x39 / 57)
+        var cmd = [UInt8](repeating: 0x00, count: 16)
+        cmd[0] = 0x39
+        cmd[1] = 0x00
+        cmd[2] = UInt8(unixTime & 0xFF)
+        cmd[3] = UInt8((unixTime >> 8) & 0xFF)
+        cmd[4] = UInt8((unixTime >> 16) & 0xFF)
+        cmd[5] = UInt8((unixTime >> 24) & 0xFF)
+        for i in 6..<15 { cmd[i] = 0x00 }
+        let checksum = Array(cmd[0..<15]).reduce(0) { Int($0) + Int($1) } & 0xFF
+        cmd[15] = UInt8(checksum)
+
+        let data = Data(cmd)
+        print("📤 HRV Command:", cmd.map { String(format: "%02X", $0) }.joined(separator: " "))
+
+        peripheral.writeValue(data, for: rx, type: .withResponse)
+
+        var collectedSamples: [UInt8] = []
+        self.onHRVData = { [weak self] dataBytes in
+            guard let self = self else { return }
+            guard dataBytes.count >= 3 else { return }
+
+            let index = dataBytes[1]
+            // MARK: - Case 1: Metadata
+            if index == 0x00 {
+                print("🧭 HRV Metadata received")
+                return
+            }
+
+            // MARK: - Case 2: No data
+            if index == 0xFF {
+                print("⚠️ HRV Response: No data for this day.")
+                completion([])
+                self.onHRVData = nil
+                return
+            }
+
+            // MARK: - Case 3: Data chunks
+            if index > 0x00 && index < 0xFF {
+                let startIndex = 2
+                let endIndex = max(0, dataBytes.count - 1)
+                let values = Array(dataBytes[startIndex..<endIndex])
+                collectedSamples.append(contentsOf: values)
+            }
+
+            // MARK: - Case 4: When enough samples collected → complete
+            if collectedSamples.count >= 100 { // adjust threshold as needed
+                let parsedValues: [HRVSample] = stride(from: 0, to: collectedSamples.count, by: 2).compactMap { i in
+                    guard i + 1 < collectedSamples.count else { return nil }
+                    let combined = UInt16(collectedSamples[i]) | (UInt16(collectedSamples[i + 1]) << 8)
+                    return HRVSample(value: Int(combined))
+                }
+
+                print("✅ Parsed \(parsedValues.count) HRV samples.")
+                completion(parsedValues)
+                self.onHRVData = nil
+            }
         }
     }
 }
