@@ -185,11 +185,9 @@ extension BluetoothViewModel {
                 print("✅ Finished HRV requests for 7 days.")
                 return
             }
-
             guard let dayDate = calendar.date(byAdding: .day, value: -offset, to: today) else { return }
             let unixTime = UInt32(dayDate.timeIntervalSince1970)
             print("➡️ Sending HRV request for \(dayDate) (\(offset) days ago)")
-
             sendHRVCommand(unixTime: unixTime) { samples in
                 allResults.append(HRVDayData(date: dayDate, samples: samples))
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
@@ -197,21 +195,19 @@ extension BluetoothViewModel {
                 }
             }
         }
-
         fetchDay(0)
     }
-
     private func sendHRVCommand(unixTime: UInt32, completion: @escaping ([HRVSample]) -> Void) {
         guard let peripheral = connectedPeripheral,
-              let rx = bigDataWriteCharacteristic ?? peripheralCharacteristics[peripheral.identifier]?.rx else {
-            print("⚠️ HRV command cannot be sent — RX missing.")
+              let rx = peripheralCharacteristics[peripheral.identifier]?.rx else {
+            print("⚠️ HRV command cannot be sent — RX missing (should be Command RX 6E400002).")
             return
         }
 
-        // 16-byte command (ID = 0x39 / 57)
+        // Build 16-byte HRV command
         var cmd = [UInt8](repeating: 0x00, count: 16)
-        cmd[0] = 0x39
-        cmd[1] = 0x00
+        cmd[0] = 0x39  // HRV Command ID (57)
+        cmd[1] = 0x00  // Index = 0 (metadata)
         cmd[2] = UInt8(unixTime & 0xFF)
         cmd[3] = UInt8((unixTime >> 8) & 0xFF)
         cmd[4] = UInt8((unixTime >> 16) & 0xFF)
@@ -221,50 +217,79 @@ extension BluetoothViewModel {
         cmd[15] = UInt8(checksum)
 
         let data = Data(cmd)
-        print("📤 HRV Command:", cmd.map { String(format: "%02X", $0) }.joined(separator: " "))
-
+        let hex = cmd.map { String(format: "%02X", $0) }.joined(separator: " ")
+        print("📤 Sending HRV Command via 6E400002 → \(hex)")
         peripheral.writeValue(data, for: rx, type: .withResponse)
 
         var collectedSamples: [UInt8] = []
-        self.onHRVData = { [weak self] dataBytes in
+        self.onHRVData = { [weak self] bytes in
             guard let self = self else { return }
-            guard dataBytes.count >= 3 else { return }
+            guard bytes.count >= 3, bytes.first == 0x39 else { return }  // HRV packets only
 
-            let index = dataBytes[1]
-            // MARK: - Case 1: Metadata
+            let index = bytes[1]
+
+            // 🧭 Metadata packet
             if index == 0x00 {
                 print("🧭 HRV Metadata received")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.requestNextHRVChunk(index: 1)
+                }
                 return
             }
 
-            // MARK: - Case 2: No data
+            // ⚠️ No data
             if index == 0xFF {
-                print("⚠️ HRV Response: No data for this day.")
+                print("⚠️ HRV: No data for this day.")
                 completion([])
                 self.onHRVData = nil
                 return
             }
 
-            // MARK: - Case 3: Data chunks
-            if index > 0x00 && index < 0xFF {
-                let startIndex = 2
-                let endIndex = max(0, dataBytes.count - 1)
-                let values = Array(dataBytes[startIndex..<endIndex])
-                collectedSamples.append(contentsOf: values)
-            }
+            // 📈 Data chunk
+            let startIndex = 2
+            let endIndex = max(0, bytes.count - 1)
+            let payload = Array(bytes[startIndex..<endIndex])
+            collectedSamples.append(contentsOf: payload)
 
-            // MARK: - Case 4: When enough samples collected → complete
-            if collectedSamples.count >= 100 { // adjust threshold as needed
-                let parsedValues: [HRVSample] = stride(from: 0, to: collectedSamples.count, by: 2).compactMap { i in
-                    guard i + 1 < collectedSamples.count else { return nil }
-                    let combined = UInt16(collectedSamples[i]) | (UInt16(collectedSamples[i + 1]) << 8)
-                    return HRVSample(value: Int(combined))
-                }
-
+            // ✅ Parse when we have enough data
+            if collectedSamples.count >= 100 {
+                let parsedValues = self.parseHRVBytes(collectedSamples)
                 print("✅ Parsed \(parsedValues.count) HRV samples.")
                 completion(parsedValues)
                 self.onHRVData = nil
+            } else {
+                // Continue requesting next index
+                let nextIndex = index &+ 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    self.requestNextHRVChunk(index: nextIndex)
+                }
             }
         }
+
+    }
+    private func requestNextHRVChunk(index: UInt8) {
+        guard let peripheral = connectedPeripheral,
+              let rx = peripheralCharacteristics[peripheral.identifier]?.rx else { return }
+
+        var cmd = [UInt8](repeating: 0x00, count: 16)
+        cmd[0] = 0x39
+        cmd[1] = index
+        for i in 2..<15 { cmd[i] = 0x00 }
+        let checksum = Array(cmd[0..<15]).reduce(0) { Int($0) + Int($1) } & 0xFF
+        cmd[15] = UInt8(checksum)
+
+        let data = Data(cmd)
+        print("➡️ Requesting HRV chunk index \(index)")
+        peripheral.writeValue(data, for: rx, type: .withResponse)
+    }
+    private func parseHRVBytes(_ raw: [UInt8]) -> [HRVSample] {
+        var samples: [HRVSample] = []
+        var i = 0
+        while i + 1 < raw.count {
+            let val = UInt16(raw[i]) | (UInt16(raw[i + 1]) << 8)
+            samples.append(HRVSample(value: Int(val)))
+            i += 2
+        }
+        return samples
     }
 }

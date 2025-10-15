@@ -24,9 +24,5 @@ struct HRVListView: View {
                 }
             }
         }
-        .navigationTitle("HRV History (7 Days)")
-        .onAppear {
-            viewModel.requestHRVWeek()
-        }
     }
 }

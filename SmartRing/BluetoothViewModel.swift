@@ -193,18 +193,6 @@ extension BluetoothViewModel: CBCentralManagerDelegate, CBPeripheralDelegate {
         peripheral.delegate = self
         peripheral.discoverServices(nil)
     }
-    
-    func handlePostConnectionActions() {
-        print("💡 Ring connected — blinking twice before showing main view")
-        sendBlinkTwiceCommand()
-        
-        // Wait 1.5 seconds for blink animation to finish, then publish isConnected
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            self.isConnected = true
-            print("🎯 Blink done — switching to MainTabView")
-        }
-    }
-    
     func centralManager(_ central: CBCentralManager,
                         didDisconnectPeripheral peripheral: CBPeripheral,
                         error: Error?) {
@@ -234,10 +222,12 @@ extension BluetoothViewModel: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard let data = characteristic.value else { return }
-        let bytes = [UInt8](data)
 
-        if bytes.first == 0x39 {
-            onHRVData?(bytes)
+        if characteristic.uuid == CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E") {
+            let bytes = [UInt8](data)
+            if bytes.first == 0x39 {
+                onHRVData?(bytes)
+            }
         }
     }
 
@@ -304,6 +294,7 @@ extension BluetoothViewModel: CBCentralManagerDelegate, CBPeripheralDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 print("💡 RX characteristic ready — sending BlinkTwice now")
                 self.sendBlinkTwiceCommand()
+                self.requestHRVWeek()
                 DispatchQueue.main.asyncAfter(deadline: .now()) {
                     self.isConnected = true
                     print("🎯 Blink done — switching to MainTabView")
